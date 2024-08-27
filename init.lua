@@ -3,136 +3,151 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "Statuslets"
-obj.version = "2.1"
+obj.version = "2.2"
 obj.author = "James Turnbull"
 obj.homepage = "https://github.com/jamtur01/Statuslets.spoon"
 obj.license = "MIT"
 
+-- Constants
+local REFRESH_INTERVAL = 300 -- 5 minutes
+local DEFAULT_COLOR = hs.drawing.color.osx_yellow
+
+-- Status indicators
+local STATUS_INDICATORS = {
+    GOOD = "●",
+    WARNING = "◐",
+    ERROR = "○"
+}
+
 -- Variables
 obj.menubar = nil
 obj.statusTimer = nil
-
--- Status Colors (default to yellow)
-obj.statusColors = {
-    cpu = hs.drawing.color.osx_yellow,
-    memory = hs.drawing.color.osx_yellow,
-    updates = hs.drawing.color.osx_yellow,
-    timemachine = hs.drawing.color.osx_yellow,
-    network = hs.drawing.color.osx_yellow,
-    usbpower = hs.drawing.color.osx_yellow,
-    storage = hs.drawing.color.osx_yellow
-}
-
--- Cached statuses
+obj.statusColors = {}
 obj.cachedStatuses = {}
 
-function string.trim(s)
-    return s:match( "^%s*(.-)%s*$" )
+-- Helper functions
+local function trim(s)
+    return s:match("^%s*(.-)%s*$")
 end
 
-function obj:createMenubarIcon()
-    local statusText = hs.styledtext.new("")
-    local statuses = {"cpu", "memory", "updates", "timemachine", "network", "usbpower", "storage"}
-    
-    for _, status in ipairs(statuses) do
-        local color = obj.statusColors[status]
-        local dot = "●"  -- Default to full circle for good status
-        if color == hs.drawing.color.osx_yellow then
-            dot = "◐"  -- Half circle for warning
-        elseif color ~= hs.drawing.color.osx_green then
-            dot = "○"  -- Empty circle for error
-        end
-        statusText = statusText .. hs.styledtext.new(dot, {color = color})
+local function executeCommand(command)
+    return trim(hs.execute(command, true))
+end
+
+local function getStatusIndicator(color)
+    if color == hs.drawing.color.osx_green then
+        return STATUS_INDICATORS.GOOD
+    elseif color == hs.drawing.color.osx_yellow then
+        return STATUS_INDICATORS.WARNING
+    else
+        return STATUS_INDICATORS.ERROR
     end
-    
-    return statusText
 end
 
-function obj:checkStatus()
-    local statuses = {}
-
-    -- CPU Usage Check
-    local cpuUsage = hs.host.cpuUsage().overall
-    statuses.cpu = {
-        color = cpuUsage.user < 75 and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
-        message = string.format("CPU Usage: %.2f%%", cpuUsage.user)
+-- Status check functions
+local function checkCPUUsage()
+    local cpuUsage = hs.host.cpuUsage().overall.user
+    return {
+        color = cpuUsage < 75 and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
+        message = string.format("CPU Usage: %.2f%%", cpuUsage)
     }
+end
 
-    -- Memory Usage Check
-    local memoryInfo = hs.execute("vm_stat | grep 'Pages free:\\|Pages inactive:'", true)
+local function checkMemoryUsage()
+    local memoryInfo = executeCommand("vm_stat | grep 'Pages free:\\|Pages inactive:'")
     local freePages = 0
     for pages in memoryInfo:gmatch("%d+") do
         freePages = freePages + tonumber(pages)
     end
     if freePages > 0 then
         local freeMemory = freePages * 4096 / (1024 * 1024 * 1024)  -- Convert to GB
-        statuses.memory = {
+        return {
             color = freeMemory > 2 and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
             message = string.format("Free Memory: %.2f GB", freeMemory)
         }
     else
-        statuses.memory = {
+        return {
             color = hs.drawing.color.osx_yellow,
             message = "Memory info unavailable"
         }
     end
+end
 
-    -- System Updates Check
-    local updatesOutput = hs.execute("softwareupdate -l | grep -q 'No new software available'", true)
-    statuses.updates = {
-        color = updatesOutput == "" and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
-        message = updatesOutput == "" and "System Updates: Up-to-date" or "System Updates: Updates available"
+local function checkSystemUpdates()
+    local updatesAvailable = executeCommand("softwareupdate -l | grep -q 'No new software available'") ~= ""
+    return {
+        color = not updatesAvailable and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
+        message = not updatesAvailable and "System Updates: Up-to-date" or "System Updates: Updates available"
     }
+end
 
-    -- Time Machine Backup Check
-    local tmOutput = hs.execute("tmutil latestbackup | grep -q 'Backup completed successfully'", true)
-    statuses.timemachine = {
-        color = tmOutput == "" and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
-        message = tmOutput == "" and "Time Machine: Backup successful" or "Time Machine: Backup needed"
+local function checkTimeMachineBackup()
+    local backupSuccessful = executeCommand("tmutil latestbackup | grep -q 'Backup completed successfully'") ~= ""
+    return {
+        color = backupSuccessful and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
+        message = backupSuccessful and "Time Machine: Backup successful" or "Time Machine: Backup needed"
     }
+end
 
-    -- Network Traffic Check
-    local networkOutput = hs.execute("netstat -ib | awk '{if ($7 > 0) print}' | grep -q '.'", true)
-    statuses.network = {
-        color = networkOutput == "" and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
-        message = networkOutput == "" and "Network Traffic: Normal" or "Network Traffic: High"
+local function checkNetworkTraffic()
+    local highTraffic = executeCommand("netstat -ib | awk '{if ($7 > 0) print}' | grep -q '.'") ~= ""
+    return {
+        color = not highTraffic and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
+        message = not highTraffic and "Network Traffic: Normal" or "Network Traffic: High"
     }
+end
 
-    -- USB Power Draw Check
-    local usbPowerOutput = hs.execute("ioreg -p IOUSB -w0 | grep -q 'Current Required'", true)
-    statuses.usbpower = {
-        color = usbPowerOutput == "" and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
-        message = usbPowerOutput == "" and "USB Power Draw: Normal" or "USB Power Draw: High"
+local function checkUSBPowerDraw()
+    local highPowerDraw = executeCommand("ioreg -p IOUSB -w0 | grep -q 'Current Required'") ~= ""
+    return {
+        color = not highPowerDraw and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
+        message = not highPowerDraw and "USB Power Draw: Normal" or "USB Power Draw: High"
     }
+end
 
-    -- Available Storage Check
-    local function getAvailableStorage()
-        local output = hs.execute("df -h / | awk 'NR==2 {print $4}'")
-        local available, unit = output:match("(%d+%.?%d*)([KMGT])")
-        if available and unit then
-            available = tonumber(available)
-            local multiplier = {K = 1/1024/1024, M = 1/1024, G = 1, T = 1024}
-            available = available * (multiplier[unit] or 1)
-            return available
-        else
-            return nil
-        end
-    end
-
-    local availableSpace = getAvailableStorage()
-    if availableSpace then
-        statuses.storage = {
-            color = availableSpace > 50 and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
-            message = string.format("Available Storage: %.2f GB", availableSpace)
+local function checkAvailableStorage()
+    local output = executeCommand("df -h / | awk 'NR==2 {print $4}'")
+    local available, unit = output:match("(%d+%.?%d*)([KMGT])")
+    if available and unit then
+        available = tonumber(available)
+        local multiplier = {K = 1/1024/1024, M = 1/1024, G = 1, T = 1024}
+        available = available * (multiplier[unit] or 1)
+        return {
+            color = available > 50 and hs.drawing.color.osx_green or hs.drawing.color.osx_red,
+            message = string.format("Available Storage: %.2f GB", available)
         }
     else
-        statuses.storage = {
+        return {
             color = hs.drawing.color.osx_yellow,
             message = "Storage info unavailable"
         }
     end
+end
 
-    return statuses
+-- Core functions
+function obj:createMenubarIcon()
+    local statusText = hs.styledtext.new("")
+    local statuses = {"cpu", "memory", "updates", "timemachine", "network", "usbpower", "storage"}
+    
+    for _, status in ipairs(statuses) do
+        local color = obj.statusColors[status] or DEFAULT_COLOR
+        local indicator = getStatusIndicator(color)
+        statusText = statusText .. hs.styledtext.new(indicator, {color = color})
+    end
+    
+    return statusText
+end
+
+function obj:checkStatus()
+    return {
+        cpu = checkCPUUsage(),
+        memory = checkMemoryUsage(),
+        updates = checkSystemUpdates(),
+        timemachine = checkTimeMachineBackup(),
+        network = checkNetworkTraffic(),
+        usbpower = checkUSBPowerDraw(),
+        storage = checkAvailableStorage()
+    }
 end
 
 function obj:updateStatuses()
@@ -156,35 +171,28 @@ end
 function obj:generateMenu()
     local menuTable = {}
     
-    for key, status in pairs(obj.cachedStatuses) do
+    for _, status in pairs(obj.cachedStatuses) do
         table.insert(menuTable, {
             title = status.message,
             disabled = true
         })
     end
     
-    -- Separator
     table.insert(menuTable, { title = "-" })
-    
-    -- Refresh option
     table.insert(menuTable, {
         title = "Refresh Status",
         fn = function() self:updateStatuses() end
     })
-    
-    -- Quit option
     table.insert(menuTable, {
         title = "Quit Statuslets",
-        fn = function() obj:stop() hs.alert.show("Statuslets Stopped") end
+        fn = function() self:stop() hs.alert.show("Statuslets Stopped") end
     })
     
     return menuTable
 end
 
 function obj:start()
-    print("Starting Statuslets...")
     if obj.menubar then
-        print("Deleting existing menubar item")
         obj.menubar:delete()
     end
     obj.menubar = hs.menubar.new()
@@ -196,7 +204,7 @@ function obj:start()
         if obj.statusTimer then
             obj.statusTimer:stop()
         end
-        obj.statusTimer = hs.timer.doEvery(300, function() self:updateStatuses() end)
+        obj.statusTimer = hs.timer.doEvery(REFRESH_INTERVAL, function() self:updateStatuses() end)
         
         print("Statuslets started successfully")
     else
@@ -206,15 +214,9 @@ end
 
 function obj:refreshMenubarIcon()
     local iconText = self:createMenubarIcon()
-    
-    if obj.menubar:setTitle(iconText) then
-        print("Menubar title updated successfully")
-    else
-        print("Failed to update menubar title")
-    end
+    obj.menubar:setTitle(iconText)
 end
 
--- Stop Function
 function obj:stop()
     if obj.statusTimer then
         obj.statusTimer:stop()
