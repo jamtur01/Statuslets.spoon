@@ -3,7 +3,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "Statuslets"
-obj.version = "2.2"
+obj.version = "2.3"
 obj.author = "James Turnbull"
 obj.homepage = "https://github.com/jamtur01/Statuslets.spoon"
 obj.license = "MIT"
